@@ -25,6 +25,7 @@ import org.fossify.commons.dialogs.ConfirmationDialog
 import org.fossify.commons.dialogs.PermissionRequiredDialog
 import org.fossify.commons.dialogs.RadioGroupDialog
 import org.fossify.commons.extensions.*
+import org.fossify.commons.helpers.PERMISSION_READ_CALL_LOG
 import org.fossify.commons.helpers.*
 import org.fossify.commons.models.FAQItem
 import org.fossify.commons.models.RadioItem
@@ -66,6 +67,10 @@ class MainActivity : SimpleActivity() {
     private val contactsRefreshHandler = Handler(Looper.getMainLooper())
     private var contactsReloadRunnable: Runnable? = null
     private var activityWasStopped = false
+    private var requestedCallLogPermission = false
+    private var ignoreContactChangesUntil = 0L
+    private var pendingContactBookRefresh = false
+    private var isReloadingContacts = false
     var cachedContacts = ArrayList<Contact>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -140,10 +145,13 @@ class MainActivity : SimpleActivity() {
         }
 
         if (binding.viewPager.adapter == null) {
-            refreshItems(openLastTab = true, forceReloadContacts = true)
+            refreshItems(openLastTab = true, forceReloadContacts = shouldReloadContactsFromProvider())
         } else if (activityWasStopped) {
-            getRecentsFragment()?.refreshItems(invalidate = true)
-            scheduleContactsReload()
+            // Refresh call log, then re-apply contact names — call-log reload otherwise
+            // overwrites names saved while the user was in the contacts app.
+            getRecentsFragment()?.refreshItems(invalidate = false) {
+                refreshRecentsNamesAfterExternalReturn()
+            }
             activityWasStopped = false
         }
 
@@ -227,7 +235,7 @@ class MainActivity : SimpleActivity() {
 
             onSearchClosedListener = {
                 getAllFragments().forEach {
-                    it?.onSearchQueryChanged("")
+                    it?.onSearchClosed()
                 }
             }
 
@@ -289,16 +297,42 @@ class MainActivity : SimpleActivity() {
         handleFullScreenNotificationsPermission { }
     }
 
+    private fun shouldReloadContactsFromProvider(): Boolean {
+        return ContactsCache.peek() == null
+    }
+
     private fun checkContactPermissions() {
         handlePermission(PERMISSION_READ_CONTACTS) {
+            initFragments()
             if (it) {
-                initFragments()
+                ContactsCache.invalidate()
                 registerContactsObserver()
-                if (binding.viewPager.adapter == null) {
-                    refreshItems(openLastTab = true, forceReloadContacts = true)
-                }
+                loadContactsAfterPermissionGranted()
             }
         }
+    }
+
+    private fun loadContactsAfterPermissionGranted() {
+        if (binding.viewPager.adapter == null) {
+            refreshItems(openLastTab = true, forceReloadContacts = true)
+        } else {
+            refreshFragments(forceReloadContacts = true)
+        }
+    }
+
+    private fun ensureCallLogAccess() {
+        if (hasPermission(PERMISSION_READ_CALL_LOG) || requestedCallLogPermission) {
+            return
+        }
+
+        requestedCallLogPermission = true
+        handlePermission(PERMISSION_READ_CALL_LOG) {
+            getRecentsFragment()?.refreshItems(invalidate = true)
+        }
+    }
+
+    fun prepareManualCallLogPermissionRequest() {
+        requestedCallLogPermission = false
     }
 
     private fun registerContactsObserver() {
@@ -308,10 +342,14 @@ class MainActivity : SimpleActivity() {
 
         contactsObserver = object : ContentObserver(contactsRefreshHandler) {
             override fun onChange(selfChange: Boolean) {
+                if (System.currentTimeMillis() < ignoreContactChangesUntil) {
+                    return
+                }
                 scheduleContactsRefresh()
             }
         }
 
+        ignoreContactChangesUntil = System.currentTimeMillis() + 2000
         contentResolver.registerContentObserver(
             ContactsContract.Contacts.CONTENT_URI,
             true,
@@ -344,12 +382,39 @@ class MainActivity : SimpleActivity() {
         }
     }
 
-    private fun reloadContactsFromProvider() {
-        if (isDestroyed || isFinishing) {
+    fun markPendingContactBookRefresh() {
+        pendingContactBookRefresh = true
+    }
+
+    private fun refreshRecentsNamesAfterExternalReturn() {
+        if (!hasPermission(PERMISSION_READ_CONTACTS)) {
             return
         }
 
+        if (pendingContactBookRefresh) {
+            pendingContactBookRefresh = false
+            reloadContactsFromProvider()
+            return
+        }
+
+        val contacts = ContactsCache.peek() ?: cachedContacts
+        if (contacts.isNotEmpty()) {
+            getRecentsFragment()?.refreshAfterContactsChanged(contacts)
+        }
+    }
+
+    private fun reloadContactsFromProvider() {
+        if (isDestroyed || isFinishing || isReloadingContacts) {
+            return
+        }
+
+        isReloadingContacts = true
         ContactsCache.get(this, forceReload = true) { contacts ->
+            isReloadingContacts = false
+            if (isDestroyed || isFinishing) {
+                return@get
+            }
+
             try {
                 cachedContacts.clear()
                 cachedContacts.addAll(contacts)
@@ -357,6 +422,10 @@ class MainActivity : SimpleActivity() {
             }
 
             runOnUiThread {
+                if (isDestroyed || isFinishing) {
+                    return@runOnUiThread
+                }
+
                 getContactsFragment()?.applyContacts(contacts)
                 getFavoritesFragment()?.applyContacts(contacts)
                 getRecentsFragment()?.refreshAfterContactsChanged(contacts)
@@ -523,9 +592,12 @@ class MainActivity : SimpleActivity() {
                 updateBottomTabItemColors(it.customView, false, getDeselectedTabDrawableIds()[it.position])
             },
             tabSelectedAction = {
-                getCurrentFragment()?.onSearchQueryChanged(binding.mainMenu.getCurrentQuery())
                 binding.viewPager.currentItem = it.position
                 updateBottomTabItemColors(it.customView, true, getSelectedTabDrawableIds()[it.position])
+
+                if (binding.mainMenu.isSearchOpen) {
+                    getCurrentFragment()?.onSearchQueryChanged(binding.mainMenu.getCurrentQuery())
+                }
 
                 if (it.position == getTabIndex(TAB_CALL_HISTORY) && config.showTabs and TAB_CALL_HISTORY > 0) {
                     clearMissedCalls()
@@ -583,7 +655,14 @@ class MainActivity : SimpleActivity() {
     }
 
     fun refreshFragments(forceReloadContacts: Boolean = false) {
+        ensureCallLogAccess()
         getRecentsFragment()?.refreshItems()
+
+        if (!hasPermission(PERMISSION_READ_CONTACTS)) {
+            return
+        }
+
+        getContactsFragment()?.beginLoadingContacts(force = forceReloadContacts)
         cacheContacts(forceReload = forceReloadContacts) { contacts ->
             runOnUiThread {
                 try {

@@ -25,6 +25,7 @@ import org.fossify.phone.extensions.runAfterAnimations
 import org.fossify.phone.extensions.startAddContactIntent
 import org.fossify.phone.extensions.startCallWithConfirmationCheck
 import org.fossify.phone.extensions.startContactDetailsIntent
+import org.fossify.phone.helpers.DebouncedSearch
 import org.fossify.phone.helpers.RecentCallContactResolver
 import org.fossify.phone.helpers.RecentsHelper
 import org.fossify.phone.interfaces.RefreshItemsListener
@@ -41,6 +42,8 @@ class RecentsFragment(
 
     private var searchQuery: String? = null
     private var recentsHelper = RecentsHelper(context)
+    private val debouncedSearch = DebouncedSearch()
+    private val recentsLock = Any()
 
     override fun onFinishInflate() {
         super.onFinishInflate()
@@ -62,6 +65,17 @@ class RecentsFragment(
                 requestCallLogPermission()
             }
         }
+
+        if (!context.hasPermission(PERMISSION_READ_CALL_LOG)) {
+            showNoCallLogPermissionState()
+        }
+    }
+
+    private fun showNoCallLogPermissionState() {
+        binding.progressIndicator.hide()
+        binding.recentsList.beGone()
+        showOrHidePlaceholder(true)
+        binding.recentsPlaceholder2.beVisible()
     }
 
     override fun setupColors(textColor: Int, primaryColor: Int, properPrimaryColor: Int) {
@@ -79,6 +93,16 @@ class RecentsFragment(
             allRecentCalls = emptyList()
         }
 
+        if (!context.hasPermission(PERMISSION_READ_CALL_LOG)) {
+            showNoCallLogPermissionState()
+            callback?.invoke()
+            return
+        }
+
+        binding.progressIndicator.show()
+        binding.recentsPlaceholder.beGone()
+        binding.recentsPlaceholder2.beGone()
+
         refreshCallLog(loadAll = false) {
             binding.recentsList.runAfterAnimations {
                 refreshCallLog(loadAll = true) {
@@ -89,20 +113,21 @@ class RecentsFragment(
     }
 
     fun refreshAfterContactsChanged(cachedContacts: List<Contact>) {
-        if (allRecentCalls.none { it is RecentCall }) {
-            return
-        }
-
         ensureBackgroundThread {
-            val recentCalls = allRecentCalls.filterIsInstance<RecentCall>()
+            val snapshot = synchronized(recentsLock) { allRecentCalls.toList() }
+            if (snapshot.none { it is RecentCall }) {
+                return@ensureBackgroundThread
+            }
+
+            val recentCalls = snapshot.filterIsInstance<RecentCall>()
             val updatedCalls = RecentCallContactResolver.applyContactChanges(context, recentCalls, cachedContacts)
-            applyUpdatedCalls(updatedCalls)
+            applyUpdatedCalls(snapshot, updatedCalls)
         }
     }
 
-    private fun applyUpdatedCalls(updatedCalls: List<RecentCall>) {
+    private fun applyUpdatedCalls(snapshot: List<CallLogItem>, updatedCalls: List<RecentCall>) {
         val updatedCallsById = updatedCalls.associateBy { it.getItemId() }
-        val updatedList = allRecentCalls.map { item ->
+        val updatedList = snapshot.map { item ->
             if (item is RecentCall) {
                 updatedCallsById[item.getItemId()] ?: item
             } else {
@@ -110,17 +135,26 @@ class RecentsFragment(
             }
         }
 
-        activity?.runOnUiThread {
-            allRecentCalls = updatedList
+        post {
+            if (!isAttachedToWindow) {
+                return@post
+            }
+
+            synchronized(recentsLock) {
+                allRecentCalls = updatedList
+            }
+
             if (searchQuery.isNullOrEmpty()) {
                 recentsAdapter?.updateItems(updatedList)
             } else {
-                updateSearchResult()
+                val fixedText = searchQuery!!.trim().replace("\\s+".toRegex(), " ")
+                updateSearchResult(fixedText)
             }
         }
     }
 
     override fun onSearchClosed() {
+        debouncedSearch.cancel()
         searchQuery = null
         showOrHidePlaceholder(allRecentCalls.isEmpty())
         recentsAdapter?.updateItems(allRecentCalls)
@@ -128,37 +162,51 @@ class RecentsFragment(
 
     override fun onSearchQueryChanged(text: String) {
         searchQuery = text
-        updateSearchResult()
-    }
+        val fixedText = text.trim().replace("\\s+".toRegex(), " ")
+        if (fixedText.isEmpty()) {
+            debouncedSearch.cancel()
+            showOrHidePlaceholder(allRecentCalls.isEmpty())
+            recentsAdapter?.updateItems(allRecentCalls)
+            return
+        }
 
-    @Suppress("UNCHECKED_CAST")
-    private fun updateSearchResult() {
-        ensureBackgroundThread {
-            val fixedText = searchQuery!!.trim().replace("\\s+".toRegex(), " ")
-            val recentCalls = allRecentCalls
-                .filterIsInstance<RecentCall>()
-                .filter {
-                    it.name.contains(fixedText, true) || it.doesContainPhoneNumber(fixedText)
-                }
-                .sortedWith(
-                    compareByDescending<RecentCall> { it.dayCode }
-                        .thenByDescending { it.name.startsWith(fixedText, true) }
-                        .thenByDescending { it.startTS }
-                )
-
-            activity?.runOnUiThread {
-                showOrHidePlaceholder(recentCalls.isEmpty())
-                recentsAdapter?.updateItems(groupCallsByDate(recentCalls), fixedText)
-            }
+        debouncedSearch.submit {
+            updateSearchResult(fixedText)
         }
     }
 
-    private fun requestCallLogPermission() {
+    @Suppress("UNCHECKED_CAST")
+    private fun updateSearchResult(fixedText: String) {
+        val snapshot = synchronized(recentsLock) { allRecentCalls.toList() }
+        val recentCalls = snapshot
+            .filterIsInstance<RecentCall>()
+            .filter {
+                it.name.contains(fixedText, true) || it.doesContainPhoneNumber(fixedText)
+            }
+            .sortedWith(
+                compareByDescending<RecentCall> { it.dayCode }
+                    .thenByDescending { it.name.startsWith(fixedText, true) }
+                    .thenByDescending { it.startTS }
+            )
+
+        post {
+            if (!isAttachedToWindow) {
+                return@post
+            }
+
+            showOrHidePlaceholder(recentCalls.isEmpty())
+            recentsAdapter?.updateItems(groupCallsByDate(recentCalls), fixedText)
+        }
+    }
+
+    fun requestCallLogPermission() {
+        (activity as? MainActivity)?.prepareManualCallLogPermissionRequest()
         activity?.handlePermission(PERMISSION_READ_CALL_LOG) {
             if (it) {
                 binding.recentsPlaceholder.text = context.getString(R.string.no_previous_calls)
-                binding.recentsPlaceholder2.beGone()
-                refreshCallLog()
+                refreshItems(invalidate = true)
+            } else {
+                showNoCallLogPermissionState()
             }
         }
     }
@@ -220,11 +268,16 @@ class RecentsFragment(
 
     private fun refreshCallLog(loadAll: Boolean = false, callback: (() -> Unit)? = null) {
         getRecentCalls(loadAll) {
-            allRecentCalls = it
+            synchronized(recentsLock) {
+                allRecentCalls = it
+            }
             if (searchQuery.isNullOrEmpty()) {
                 activity?.runOnUiThread { gotRecents(it) }
             } else {
-                updateSearchResult()
+                val fixedText = searchQuery!!.trim().replace("\\s+".toRegex(), " ")
+                ensureBackgroundThread {
+                    updateSearchResult(fixedText)
+                }
             }
 
             callback?.invoke()

@@ -10,10 +10,9 @@ import org.fossify.commons.extensions.beVisibleIf
 import org.fossify.commons.extensions.getColorStateList
 import org.fossify.commons.extensions.getContrastColor
 import org.fossify.commons.extensions.hasPermission
-import org.fossify.commons.extensions.normalizeString
 import org.fossify.commons.extensions.underlineText
 import org.fossify.commons.helpers.PERMISSION_READ_CONTACTS
-import org.fossify.commons.helpers.getProperText
+import org.fossify.commons.helpers.ensureBackgroundThread
 import org.fossify.commons.models.contacts.Contact
 import org.fossify.phone.R
 import org.fossify.phone.activities.MainActivity
@@ -25,13 +24,18 @@ import org.fossify.phone.extensions.handleGenericContactClick
 import org.fossify.phone.extensions.launchCreateNewContactIntent
 import org.fossify.phone.extensions.setupWithContacts
 import org.fossify.phone.extensions.startContactDetailsIntent
+import org.fossify.phone.helpers.ContactSearchCache
+import org.fossify.phone.helpers.ContactSearchHelper
 import org.fossify.phone.helpers.ContactsCache
+import org.fossify.phone.helpers.DebouncedSearch
 import org.fossify.phone.interfaces.RefreshItemsListener
 
 class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPagerFragment<MyViewPagerFragment.LettersInnerBinding>(context, attributeSet),
     RefreshItemsListener {
     private lateinit var binding: FragmentLettersLayoutBinding
     private var allContacts = ArrayList<Contact>()
+    private var searchIndex = emptyList<ContactSearchHelper.IndexedContact>()
+    private val debouncedSearch = DebouncedSearch()
 
     override fun onFinishInflate() {
         super.onFinishInflate()
@@ -65,6 +69,31 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
                 }
             }
         }
+
+        ensureContactsLoaded()
+    }
+
+    private fun ensureContactsLoaded() {
+        if (!context.hasPermission(PERMISSION_READ_CONTACTS)) {
+            binding.fragmentPlaceholder.beVisible()
+            binding.fragmentPlaceholder2.beVisible()
+            binding.fragmentList.beGone()
+            return
+        }
+
+        ContactsCache.peek()?.let { cached ->
+            applyContacts(ArrayList(cached))
+            return
+        }
+
+        if (allContacts.isEmpty()) {
+            showLoading()
+            ContactsCache.get(context) { contacts ->
+                activity?.runOnUiThread {
+                    applyContacts(contacts)
+                }
+            }
+        }
     }
 
     override fun setupColors(textColor: Int, primaryColor: Int, properPrimaryColor: Int) {
@@ -82,6 +111,7 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
     }
 
     override fun refreshItems(invalidate: Boolean, callback: (() -> Unit)?) {
+        beginLoadingContacts(force = invalidate)
         ContactsCache.get(context, forceReload = invalidate) { contacts ->
             activity?.runOnUiThread {
                 applyContacts(contacts)
@@ -90,16 +120,49 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
         }
     }
 
-    fun applyContacts(contacts: ArrayList<Contact>) {
-        allContacts = contacts
+    fun beginLoadingContacts(force: Boolean = false) {
+        if (!context.hasPermission(PERMISSION_READ_CONTACTS)) {
+            return
+        }
 
-        try {
-            (activity as MainActivity).cachedContacts.clear()
-            (activity as MainActivity).cachedContacts.addAll(contacts)
-        } catch (_: Exception) {
+        // In-memory cache survives activity recreate (back button → reopen from recents).
+        if (!force && ContactsCache.peek() != null) {
+            return
+        }
+
+        if (!force && allContacts.isNotEmpty() && binding.fragmentList.adapter != null) {
+            return
+        }
+
+        showLoading()
+    }
+
+    fun applyContacts(contacts: ArrayList<Contact>) {
+        if (!isAttachedToWindow) {
+            return
+        }
+
+        allContacts = contacts
+        debouncedSearch.cancel()
+        ContactSearchCache.invalidate()
+        searchIndex = emptyList()
+
+        (activity as? MainActivity)?.let { mainActivity ->
+            mainActivity.cachedContacts.clear()
+            mainActivity.cachedContacts.addAll(contacts)
         }
 
         refreshDisplayedContacts()
+
+        val contactsCopy = ArrayList(contacts)
+        ensureBackgroundThread {
+            val index = ContactSearchCache.build(contactsCopy)
+            post {
+                if (isAttachedToWindow) {
+                    searchIndex = index
+                }
+            }
+        }
     }
 
     private fun refreshDisplayedContacts() {
@@ -111,8 +174,21 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
         }
     }
 
+    private fun showLoading() {
+        binding.progressIndicator.show()
+        binding.fragmentPlaceholder.beGone()
+        binding.fragmentPlaceholder2.beGone()
+        binding.fragmentList.beGone()
+        binding.letterFastscroller.beGone()
+        binding.letterFastscrollerThumb.beGone()
+    }
+
+    private fun hideLoading() {
+        binding.progressIndicator.hide()
+    }
+
     private fun gotContacts(contacts: ArrayList<Contact>) {
-        setupLetterFastScroller(contacts)
+        hideLoading()
         if (contacts.isEmpty()) {
             binding.apply {
                 fragmentPlaceholder.beVisible()
@@ -142,11 +218,15 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
                     binding.fragmentList.adapter = this
                 }
 
-                if (context.areSystemAnimationsEnabled) {
+                if (context.areSystemAnimationsEnabled && contacts.size < 500) {
                     binding.fragmentList.scheduleLayoutAnimation()
                 }
             } else {
                 (binding.fragmentList.adapter as ContactsAdapter).updateItems(contacts)
+            }
+
+            binding.fragmentList.post {
+                setupLetterFastScroller(contacts)
             }
         }
     }
@@ -156,6 +236,7 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
     }
 
     override fun onSearchClosed() {
+        debouncedSearch.cancel()
         binding.fragmentPlaceholder.beVisibleIf(allContacts.isEmpty())
         (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(allContacts)
         setupLetterFastScroller(allContacts)
@@ -163,28 +244,30 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
 
     override fun onSearchQueryChanged(text: String) {
         val fixedText = text.trim().replace("\\s+".toRegex(), " ")
-        val shouldNormalize = fixedText.normalizeString() == fixedText
-        val filtered = allContacts.filter { contact ->
-            getProperText(contact.getNameToDisplay(), shouldNormalize).contains(fixedText, true) ||
-                getProperText(contact.nickname, shouldNormalize).contains(fixedText, true) ||
-                (fixedText.toLongOrNull() != null && contact.doesContainPhoneNumber(fixedText, true)) ||
-                contact.emails.any { it.value.contains(fixedText, true) } ||
-                contact.addresses.any { getProperText(it.value, shouldNormalize).contains(fixedText, true) } ||
-                contact.IMs.any { it.value.contains(fixedText, true) } ||
-                getProperText(contact.notes, shouldNormalize).contains(fixedText, true) ||
-                getProperText(contact.organization.company, shouldNormalize).contains(fixedText, true) ||
-                getProperText(contact.organization.jobPosition, shouldNormalize).contains(fixedText, true) ||
-                contact.websites.any { it.contains(fixedText, true) }
-        } as ArrayList
-
-        filtered.sortBy {
-            val nameToDisplay = it.getNameToDisplay()
-            !getProperText(nameToDisplay, shouldNormalize).startsWith(fixedText, true) && !nameToDisplay.contains(fixedText, true)
+        if (fixedText.isEmpty()) {
+            debouncedSearch.cancel()
+            gotContacts(allContacts)
+            return
         }
 
-        binding.fragmentPlaceholder.beVisibleIf(filtered.isEmpty())
-        (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(filtered, fixedText)
-        setupLetterFastScroller(filtered)
+        debouncedSearch.submit {
+            val contactsSnapshot = ArrayList(allContacts)
+            val index = if (searchIndex.isNotEmpty()) {
+                searchIndex
+            } else {
+                ContactSearchCache.build(contactsSnapshot)
+            }
+            val filtered = ArrayList(ContactSearchHelper.filter(index, text))
+            post {
+                if (!isAttachedToWindow) {
+                    return@post
+                }
+
+                binding.fragmentPlaceholder.beVisibleIf(filtered.isEmpty())
+                (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(filtered, fixedText)
+                setupLetterFastScroller(filtered)
+            }
+        }
     }
 
     private fun requestReadContactsPermission() {
@@ -192,12 +275,7 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
             if (it) {
                 binding.fragmentPlaceholder.text = context.getString(R.string.no_contacts_found)
                 binding.fragmentPlaceholder2.text = context.getString(R.string.create_new_contact)
-                ContactsCache.invalidate()
-                ContactsCache.get(context, forceReload = true) { contacts ->
-                    activity?.runOnUiThread {
-                        gotContacts(contacts)
-                    }
-                }
+                refreshItems(invalidate = true)
             }
         }
     }

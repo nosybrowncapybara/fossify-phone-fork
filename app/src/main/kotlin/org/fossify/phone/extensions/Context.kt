@@ -14,6 +14,7 @@ import org.fossify.commons.extensions.launchActivityIntent
 import org.fossify.commons.extensions.telecomManager
 import org.fossify.commons.helpers.KEY_PHONE
 import org.fossify.commons.helpers.ensureBackgroundThread
+import org.fossify.phone.activities.MainActivity
 import org.fossify.phone.helpers.Config
 import org.fossify.phone.models.SIMAccount
 
@@ -88,6 +89,7 @@ fun Context.launchAccountsConfiguration() {
 }
 
 fun Activity.startAddContactIntent(phoneNumber: String) {
+    (this as? MainActivity)?.markPendingContactBookRefresh()
     Intent().apply {
         action = Intent.ACTION_INSERT_OR_EDIT
         type = "vnd.android.cursor.item/contact"

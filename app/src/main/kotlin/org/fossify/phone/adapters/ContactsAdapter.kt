@@ -298,7 +298,7 @@ class ContactsAdapter(
         }
     }
 
-    private fun getSelectedItems() = contacts.filter { selectedKeys.contains(it.rawId) } as ArrayList<Contact>
+    private fun getSelectedItems() = contacts.filter { selectedKeys.contains(it.rawId) }
 
     private fun getSelectedPhoneNumber(): String? {
         return getSelectedItems().firstOrNull()?.getPrimaryNumber()

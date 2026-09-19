@@ -3,8 +3,10 @@ package org.fossify.phone.helpers
 import android.content.Context
 import org.fossify.commons.extensions.baseConfig
 import org.fossify.commons.extensions.getMyContactsCursor
+import org.fossify.commons.extensions.hasPermission
 import org.fossify.commons.helpers.ContactsHelper
 import org.fossify.commons.helpers.MyContactsContentProvider
+import org.fossify.commons.helpers.PERMISSION_READ_CONTACTS
 import org.fossify.commons.helpers.SMT_PRIVATE
 import org.fossify.commons.models.contacts.Contact
 
@@ -18,6 +20,9 @@ object ContactsCache {
     @Volatile
     private var cached: ArrayList<Contact>? = null
 
+    @Volatile
+    private var hasValidCache = false
+
     private var inFlight = false
     private val waiters = mutableListOf<(ArrayList<Contact>) -> Unit>()
 
@@ -26,11 +31,16 @@ object ContactsCache {
         forceReload: Boolean = false,
         callback: (ArrayList<Contact>) -> Unit,
     ) {
+        if (!context.hasPermission(PERMISSION_READ_CONTACTS)) {
+            callback(ArrayList())
+            return
+        }
+
         if (forceReload) {
             invalidate()
         }
 
-        if (!forceReload) {
+        if (!forceReload && hasValidCache) {
             cached?.let {
                 callback(ArrayList(it))
                 return
@@ -38,7 +48,7 @@ object ContactsCache {
         }
 
         synchronized(lock) {
-            if (!forceReload) {
+            if (!forceReload && hasValidCache) {
                 cached?.let {
                     callback(ArrayList(it))
                     return
@@ -64,6 +74,7 @@ object ContactsCache {
             val toNotify: List<(ArrayList<Contact>) -> Unit>
             synchronized(lock) {
                 cached = result
+                hasValidCache = true
                 inFlight = false
                 toNotify = waiters.toList()
                 waiters.clear()
@@ -72,11 +83,13 @@ object ContactsCache {
         }
     }
 
-    fun peek(): List<Contact>? = cached
+    fun peek(): List<Contact>? = if (hasValidCache) cached else null
 
     fun invalidate() {
         synchronized(lock) {
             cached = null
+            hasValidCache = false
         }
+        ContactSearchCache.invalidate()
     }
 }

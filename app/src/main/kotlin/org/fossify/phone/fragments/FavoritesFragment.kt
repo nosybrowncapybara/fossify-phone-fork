@@ -17,6 +17,7 @@ import org.fossify.commons.helpers.Converters
 import org.fossify.commons.helpers.MyContactsContentProvider
 import org.fossify.commons.helpers.PERMISSION_READ_CONTACTS
 import org.fossify.commons.helpers.SMT_PRIVATE
+import org.fossify.commons.helpers.ensureBackgroundThread
 import org.fossify.commons.helpers.VIEW_TYPE_GRID
 import org.fossify.commons.models.contacts.Contact
 import org.fossify.commons.views.MyGridLayoutManager
@@ -31,13 +32,16 @@ import org.fossify.phone.extensions.config
 import org.fossify.phone.extensions.handleGenericContactClick
 import org.fossify.phone.extensions.setupWithContacts
 import org.fossify.phone.extensions.startContactDetailsIntent
+import org.fossify.phone.helpers.ContactSearchHelper
 import org.fossify.phone.helpers.ContactsCache
+import org.fossify.phone.helpers.DebouncedSearch
 import org.fossify.phone.interfaces.RefreshItemsListener
 
 class FavoritesFragment(context: Context, attributeSet: AttributeSet) : MyViewPagerFragment<MyViewPagerFragment.LettersInnerBinding>(context, attributeSet),
     RefreshItemsListener {
     private lateinit var binding: FragmentLettersLayoutBinding
     private var allContacts = ArrayList<Contact>()
+    private val debouncedSearch = DebouncedSearch()
 
     override fun onFinishInflate() {
         super.onFinishInflate()
@@ -79,27 +83,43 @@ class FavoritesFragment(context: Context, attributeSet: AttributeSet) : MyViewPa
     }
 
     fun applyContacts(contacts: ArrayList<Contact>) {
-        allContacts = ArrayList(contacts)
-
-        if (SMT_PRIVATE !in context.baseConfig.ignoredContactSources) {
-            val privateCursor = context.getMyContactsCursor(favoritesOnly = true, withPhoneNumbersOnly = true)
-            val privateContacts = MyContactsContentProvider.getContacts(context, privateCursor).map {
-                it.copy(starred = 1)
-            }
-            if (privateContacts.isNotEmpty()) {
-                allContacts.addAll(privateContacts)
-                allContacts.sort()
-            }
+        if (!isAttachedToWindow) {
+            return
         }
 
-        val favorites = allContacts.filter { it.starred == 1 } as ArrayList<Contact>
-        allContacts = if (activity!!.config.isCustomOrderSelected) {
-            sortByCustomOrder(favorites)
-        } else {
-            favorites
-        }
+        debouncedSearch.cancel()
+        val useCustomOrder = activity?.config?.isCustomOrderSelected == true
+        val favoritesOrder = activity?.config?.favoritesContactsOrder
 
-        refreshDisplayedContacts()
+        ensureBackgroundThread {
+            val mergedContacts = ArrayList(contacts)
+            if (SMT_PRIVATE !in context.baseConfig.ignoredContactSources) {
+                val privateCursor = context.getMyContactsCursor(favoritesOnly = true, withPhoneNumbersOnly = true)
+                val privateContacts = MyContactsContentProvider.getContacts(context, privateCursor).map {
+                    it.copy(starred = 1)
+                }
+                if (privateContacts.isNotEmpty()) {
+                    mergedContacts.addAll(privateContacts)
+                    mergedContacts.sort()
+                }
+            }
+
+            val favorites = ArrayList(mergedContacts.filter { it.starred == 1 })
+            val processedContacts = if (useCustomOrder) {
+                sortByCustomOrder(favorites, favoritesOrder.orEmpty())
+            } else {
+                favorites
+            }
+
+            post {
+                if (!isAttachedToWindow) {
+                    return@post
+                }
+
+                allContacts = processedContacts
+                refreshDisplayedContacts()
+            }
+        }
     }
 
     private fun refreshDisplayedContacts() {
@@ -178,9 +198,7 @@ class FavoritesFragment(context: Context, attributeSet: AttributeSet) : MyViewPa
         }
     }
 
-    private fun sortByCustomOrder(favorites: List<Contact>): ArrayList<Contact> {
-        val favoritesOrder = activity!!.config.favoritesContactsOrder
-
+    private fun sortByCustomOrder(favorites: List<Contact>, favoritesOrder: String): ArrayList<Contact> {
         if (favoritesOrder.isEmpty()) {
             return ArrayList(favorites)
         }
@@ -206,6 +224,7 @@ class FavoritesFragment(context: Context, attributeSet: AttributeSet) : MyViewPa
     }
 
     override fun onSearchClosed() {
+        debouncedSearch.cancel()
         binding.fragmentPlaceholder.beVisibleIf(allContacts.isEmpty())
         (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(allContacts)
         setupLetterFastScroller(allContacts)
@@ -213,15 +232,20 @@ class FavoritesFragment(context: Context, attributeSet: AttributeSet) : MyViewPa
 
     override fun onSearchQueryChanged(text: String) {
         val fixedText = text.trim().replace("\\s+".toRegex(), " ")
-        val contacts = allContacts.filter {
-            it.name.contains(fixedText, true) || (text.toLongOrNull() != null && it.doesContainPhoneNumber(fixedText))
-        }.sortedByDescending {
-            it.name.startsWith(fixedText, true)
-        }.toMutableList() as ArrayList<Contact>
+        if (fixedText.isEmpty()) {
+            debouncedSearch.cancel()
+            gotContacts(allContacts)
+            return
+        }
 
-        binding.fragmentPlaceholder.beVisibleIf(contacts.isEmpty())
-        (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(contacts, fixedText)
-        setupLetterFastScroller(contacts)
+        debouncedSearch.submit {
+            val contacts = ArrayList(ContactSearchHelper.filterFavorites(allContacts, text))
+            activity?.runOnUiThread {
+                binding.fragmentPlaceholder.beVisibleIf(contacts.isEmpty())
+                (binding.fragmentList.adapter as? ContactsAdapter)?.updateItems(contacts, fixedText)
+                setupLetterFastScroller(contacts)
+            }
+        }
     }
 
     private fun setViewType(viewType: Int) {

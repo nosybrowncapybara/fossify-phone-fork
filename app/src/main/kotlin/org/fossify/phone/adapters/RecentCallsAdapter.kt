@@ -245,8 +245,8 @@ class RecentCallsAdapter(
         finishActMode()
     }
 
-    private fun tryBlockingUnblocking() {
-        val selectedCalls = getSelectedItems()
+    private fun tryBlockingUnblocking(calls: List<RecentCall>? = null) {
+        val selectedCalls = calls ?: getSelectedItems()
         if (selectedCalls.isEmpty()) {
             return
         }
@@ -254,26 +254,25 @@ class RecentCallsAdapter(
         if (areSelectedCallsBlocked(selectedCalls)) {
             unblockNumbers(selectedCalls)
         } else {
-            askConfirmBlock()
+            askConfirmBlock(selectedCalls)
         }
     }
 
-    private fun askConfirmBlock() {
-        val numbers = TextUtils.join(", ", getSelectedItems().distinctBy { it.phoneNumber }.map { it.phoneNumber })
+    private fun askConfirmBlock(calls: List<RecentCall>) {
+        val numbers = TextUtils.join(", ", calls.distinctBy { it.phoneNumber }.map { it.phoneNumber })
         val baseString = org.fossify.commons.R.string.block_confirmation
         val question = String.format(resources.getString(baseString), numbers)
 
         ConfirmationDialog(activity, question) {
-            blockNumbers()
+            blockNumbers(calls)
         }
     }
 
-    private fun blockNumbers() {
-        if (selectedKeys.isEmpty()) {
+    private fun blockNumbers(calls: List<RecentCall>? = null) {
+        val callsToBlock = calls ?: getSelectedItems()
+        if (callsToBlock.isEmpty()) {
             return
         }
-
-        val callsToBlock = getSelectedItems()
         val numbersToUpdate = callsToBlock.map { it.phoneNumber }.distinct()
         ensureBackgroundThread {
             numbersToUpdate.forEach { number ->
@@ -361,29 +360,28 @@ class RecentCallsAdapter(
         finishActMode()
     }
 
-    private fun askConfirmRemove() {
+    private fun askConfirmRemove(calls: List<RecentCall>? = null) {
         ConfirmationDialog(activity, activity.getString(R.string.remove_confirmation)) {
             activity.handlePermission(PERMISSION_WRITE_CALL_LOG) {
-                removeRecents()
+                removeRecents(calls)
             }
         }
     }
 
-    private fun removeRecents() {
-        if (selectedKeys.isEmpty()) {
+    private fun removeRecents(callsToRemove: List<RecentCall>? = null) {
+        val calls = callsToRemove ?: getSelectedItems()
+        if (calls.isEmpty()) {
             return
         }
-
-        val callsToRemove = getSelectedItems()
         val idsToRemove = ArrayList<Int>()
-        callsToRemove.forEach {
+        calls.forEach {
             idsToRemove.add(it.id)
             it.groupedCalls?.mapTo(idsToRemove) { call -> call.id }
         }
 
         RecentsHelper(activity).removeRecentCalls(idsToRemove) {
-            itemDelete(callsToRemove)
-            val recentCalls = currentList.toMutableList().also { it.removeAll(callsToRemove) }
+            itemDelete(calls)
+            val recentCalls = currentList.toMutableList().also { it.removeAll(calls) }
             activity.runOnUiThread {
                 refreshItemsListener?.refreshItems()
                 submitList(recentCalls)
@@ -426,6 +424,7 @@ class RecentCallsAdapter(
 
     private fun showPopupMenu(view: View, call: RecentCall) {
         finishActMode()
+        selectedKeys.clear()
         val theme = activity.getPopupMenuTheme()
         val contextTheme = ContextThemeWrapper(activity, theme)
         val contact = findContactByCall(call)
@@ -449,82 +448,23 @@ class RecentCallsAdapter(
             }
 
             setOnMenuItemClickListener { item ->
-                val callId = call.id
                 when (item.itemId) {
-                    R.id.cab_call -> {
-                        executeItemMenuOperation(callId) {
-                            callContact()
-                        }
-                    }
-
-                    R.id.cab_call_sim_1 -> {
-                        executeItemMenuOperation(callId) {
-                            callContact(true)
-                        }
-                    }
-
-                    R.id.cab_call_sim_2 -> {
-                        executeItemMenuOperation(callId) {
-                            callContact(false)
-                        }
-                    }
-
-                    R.id.cab_send_sms -> {
-                        executeItemMenuOperation(callId) {
-                            sendSMS()
-                        }
-                    }
-
-                    R.id.cab_view_details -> {
-                        executeItemMenuOperation(callId) {
-                            launchContactDetailsIntent(contact)
-                        }
-                    }
-
-                    R.id.cab_add_number -> {
-                        executeItemMenuOperation(callId) {
-                            addNumberToContact()
-                        }
-                    }
-
-                    R.id.cab_show_call_details -> {
-                        executeItemMenuOperation(callId) {
-                            showCallDetails()
-                        }
-                    }
-
-                    R.id.cab_block_number -> {
-                        selectedKeys.add(callId)
-                        tryBlockingUnblocking()
-                    }
-
-                    R.id.cab_remove -> {
-                        selectedKeys.add(callId)
-                        askConfirmRemove()
-                    }
-
-                    R.id.cab_copy_number -> {
-                        executeItemMenuOperation(callId) {
-                            copyNumber()
-                        }
-                    }
-
-                    R.id.cab_remove_default_sim -> {
-                        executeItemMenuOperation(callId) {
-                            removeDefaultSIM()
-                        }
-                    }
+                    R.id.cab_call -> (activity as SimpleActivity).startCallWithConfirmationCheck(call.phoneNumber, call.name)
+                    R.id.cab_call_sim_1 -> activity.callContactWithSimWithConfirmationCheck(call.phoneNumber, call.name, true)
+                    R.id.cab_call_sim_2 -> activity.callContactWithSimWithConfirmationCheck(call.phoneNumber, call.name, false)
+                    R.id.cab_send_sms -> activity.launchSendSMSIntent(call.phoneNumber)
+                    R.id.cab_view_details -> launchContactDetailsIntent(contact)
+                    R.id.cab_add_number -> activity.startAddContactIntent(call.phoneNumber)
+                    R.id.cab_show_call_details -> ShowGroupedCallsDialog(activity, call.groupedCalls ?: listOf(call))
+                    R.id.cab_block_number -> tryBlockingUnblocking(listOf(call))
+                    R.id.cab_remove -> askConfirmRemove(listOf(call))
+                    R.id.cab_copy_number -> activity.copyToClipboard(call.phoneNumber)
+                    R.id.cab_remove_default_sim -> activity.config.removeCustomSIM(call.phoneNumber)
                 }
                 true
             }
             show()
         }
-    }
-
-    private fun executeItemMenuOperation(callId: Int, callback: () -> Unit) {
-        selectedKeys.add(callId)
-        callback()
-        selectedKeys.remove(callId)
     }
 
     private inner class RecentCallViewHolder(val binding: ItemRecentCallBinding) : ViewHolder(binding.root) {
