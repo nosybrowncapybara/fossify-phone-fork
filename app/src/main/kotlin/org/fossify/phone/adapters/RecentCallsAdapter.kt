@@ -95,6 +95,8 @@ class RecentCallsAdapter(
     private var phoneNumberUtilInstance: PhoneNumberUtil = PhoneNumberUtil.getInstance()
     private var phoneNumberOfflineGeocoderInstance: PhoneNumberOfflineGeocoder = PhoneNumberOfflineGeocoder.getInstance()
     private val cachedSimColors = HashMap<Pair<Int,Int>, Int>()
+    private val cachedLocations = HashMap<String, String?>()
+    private var cachedBlockedNumbers = activity.getBlockedNumbers()
 
     init {
         initDrawables()
@@ -279,6 +281,7 @@ class RecentCallsAdapter(
             }
 
             activity.runOnUiThread {
+                cachedBlockedNumbers = activity.getBlockedNumbers()
                 refreshBlockedStateForNumbers(numbersToUpdate)
                 finishActMode()
             }
@@ -294,6 +297,7 @@ class RecentCallsAdapter(
 
             activity.runOnUiThread {
                 activity.toast(R.string.unblock_number_success)
+                cachedBlockedNumbers = activity.getBlockedNumbers()
                 refreshBlockedStateForNumbers(numbersToUpdate)
                 finishActMode()
             }
@@ -318,12 +322,11 @@ class RecentCallsAdapter(
     }
 
     private fun areSelectedCallsBlocked(calls: List<RecentCall>): Boolean {
-        val blockedNumbers = activity.getBlockedNumbers()
-        return calls.all { activity.isNumberBlocked(it.phoneNumber, blockedNumbers) }
+        return calls.all { activity.isNumberBlocked(it.phoneNumber, cachedBlockedNumbers) }
     }
 
     private fun isCallBlocked(call: RecentCall): Boolean {
-        return activity.isNumberBlocked(call.phoneNumber, activity.getBlockedNumbers())
+        return activity.isNumberBlocked(call.phoneNumber, cachedBlockedNumbers)
     }
 
     private fun updateBlockMenuItem(menuItem: MenuItem, calls: List<RecentCall>) {
@@ -390,7 +393,7 @@ class RecentCallsAdapter(
     }
 
     private fun findContactByCall(recentCall: RecentCall): Contact? {
-        return (activity as MainActivity).cachedContacts.find { it.name == recentCall.name && it.doesHavePhoneNumber(recentCall.phoneNumber) }
+        return (activity as MainActivity).cachedContacts.find { it.doesHavePhoneNumber(recentCall.phoneNumber) }
     }
 
     private fun launchContactDetailsIntent(contact: Contact?) {
@@ -540,8 +543,8 @@ class RecentCallsAdapter(
 
                 val currentFontSize = fontSize
                 itemRecentsHolder.isSelected = selectedKeys.contains(call.id)
-                val matchingContact = findContactByCall(call)
-                val name = matchingContact?.getNameToDisplay() ?: call.name
+                val name = call.name
+                val hasSavedContactName = name != call.phoneNumber && name.isNotBlank()
                 val formatPhoneNumbers = activity.config.formatPhoneNumbers
                 var nameToShow = if (name == call.phoneNumber && formatPhoneNumbers) {
                     SpannableString(name.formatPhoneNumber())
@@ -612,17 +615,24 @@ class RecentCallsAdapter(
                 itemRecentsLocation.apply {
                     val locale = Locale.getDefault()
                     val defaultCountryCode = locale.country
-                    val phoneNumber = try {
-                        phoneNumberUtilInstance
-                            .parse(call.phoneNumber, defaultCountryCode)
-                    } catch (_: NumberParseException) {
-                        null
+                    val location = cachedLocations.getOrPut(call.phoneNumber) {
+                        val phoneNumber = try {
+                            phoneNumberUtilInstance.parse(call.phoneNumber, defaultCountryCode)
+                        } catch (_: NumberParseException) {
+                            null
+                        }
+
+                        if (phoneNumber != null) {
+                            phoneNumberOfflineGeocoderInstance
+                                .getDescriptionForNumber(phoneNumber, locale, defaultCountryCode)
+                        } else {
+                            null
+                        }
                     }
 
-                    val location = if (phoneNumber != null) {
-                        phoneNumberOfflineGeocoderInstance
-                            .getDescriptionForNumber(phoneNumber, locale, defaultCountryCode)
-                    } else {
+                    val phoneNumber = try {
+                        phoneNumberUtilInstance.parse(call.phoneNumber, defaultCountryCode)
+                    } catch (_: NumberParseException) {
                         null
                     }
 
@@ -632,7 +642,7 @@ class RecentCallsAdapter(
                     beVisibleIf(
                         phoneNumber != null
                                 && phoneNumber.countryCodeSource != Phonenumber.PhoneNumber.CountryCodeSource.FROM_DEFAULT_COUNTRY
-                                && (location != locale.displayCountry || matchingContact == null)
+                                && (location != locale.displayCountry || !hasSavedContactName)
                     )
                 }
 

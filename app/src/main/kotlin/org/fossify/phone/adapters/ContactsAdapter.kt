@@ -288,19 +288,12 @@ class ContactsAdapter(
             return
         }
 
-        val contactsToRemove = getSelectedItems()
-        val positions = getSelectedItemPositions()
-        contacts.removeAll(contactsToRemove)
-        val idsToRemove = contactsToRemove.map { it.rawId }.toMutableList() as ArrayList<Int>
+        val idsToRemove = getSelectedItems().map { it.rawId }.toMutableList() as ArrayList<Int>
 
         SimpleContactsHelper(activity).deleteContactRawIDs(idsToRemove) {
             activity.runOnUiThread {
-                if (contacts.isEmpty()) {
-                    refreshItemsListener?.refreshItems()
-                    finishActMode()
-                } else {
-                    removeSelectedItems(positions)
-                }
+                refreshItemsListener?.refreshItems(invalidate = true)
+                finishActMode()
             }
         }
     }

@@ -82,23 +82,32 @@ class ContactsFragment(context: Context, attributeSet: AttributeSet) : MyViewPag
     }
 
     override fun refreshItems(invalidate: Boolean, callback: (() -> Unit)?) {
-        if (invalidate) {
-            ContactsCache.invalidate()
-        }
-
         ContactsCache.get(context, forceReload = invalidate) { contacts ->
-            allContacts = contacts
-
-            try {
-                (activity as MainActivity).cachedContacts.clear()
-                (activity as MainActivity).cachedContacts.addAll(contacts)
-            } catch (_: Exception) {
-            }
-
             activity?.runOnUiThread {
-                gotContacts(contacts)
+                applyContacts(contacts)
                 callback?.invoke()
             }
+        }
+    }
+
+    fun applyContacts(contacts: ArrayList<Contact>) {
+        allContacts = contacts
+
+        try {
+            (activity as MainActivity).cachedContacts.clear()
+            (activity as MainActivity).cachedContacts.addAll(contacts)
+        } catch (_: Exception) {
+        }
+
+        refreshDisplayedContacts()
+    }
+
+    private fun refreshDisplayedContacts() {
+        val searchQuery = (activity as? MainActivity)?.getCurrentSearchQuery().orEmpty()
+        if (searchQuery.isNotEmpty()) {
+            onSearchQueryChanged(searchQuery)
+        } else {
+            gotContacts(allContacts)
         }
     }
 

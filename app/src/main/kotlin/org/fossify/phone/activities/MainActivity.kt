@@ -8,8 +8,11 @@ import android.content.res.Configuration
 import android.graphics.drawable.Drawable
 import android.graphics.drawable.Icon
 import android.graphics.drawable.LayerDrawable
+import android.database.ContentObserver
 import android.os.Bundle
 import android.os.Handler
+import android.os.Looper
+import android.provider.ContactsContract
 import android.provider.Settings
 import android.widget.ImageView
 import android.widget.TextView
@@ -59,6 +62,10 @@ class MainActivity : SimpleActivity() {
     private var storedFontSize = 0
     private var storedStartNameWithSurname = false
     private var fullScreenPermissionChecked = false
+    private var contactsObserver: ContentObserver? = null
+    private val contactsRefreshHandler = Handler(Looper.getMainLooper())
+    private var contactsReloadRunnable: Runnable? = null
+    private var activityWasStopped = false
     var cachedContacts = ArrayList<Contact>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -132,8 +139,12 @@ class MainActivity : SimpleActivity() {
             storedStartNameWithSurname = config.startNameWithSurname
         }
 
-        if (!binding.mainMenu.isSearchOpen) {
-            refreshItems(true)
+        if (binding.viewPager.adapter == null) {
+            refreshItems(openLastTab = true, forceReloadContacts = true)
+        } else if (activityWasStopped) {
+            getRecentsFragment()?.refreshItems(invalidate = true)
+            scheduleContactsReload()
+            activityWasStopped = false
         }
 
         val configFontSize = config.fontSize
@@ -144,9 +155,6 @@ class MainActivity : SimpleActivity() {
         }
 
         checkShortcuts()
-        Handler().postDelayed({
-            getRecentsFragment()?.refreshItems()
-        }, 2000)
     }
 
     override fun onPause() {
@@ -154,6 +162,11 @@ class MainActivity : SimpleActivity() {
         storedShowTabs = config.showTabs
         storedStartNameWithSurname = config.startNameWithSurname
         config.lastUsedViewPagerPage = binding.viewPager.currentItem
+    }
+
+    override fun onStop() {
+        super.onStop()
+        activityWasStopped = true
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, resultData: Intent?) {
@@ -189,6 +202,7 @@ class MainActivity : SimpleActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        unregisterContactsObserver()
         EventBus.getDefault().unregister(this)
     }
 
@@ -277,7 +291,76 @@ class MainActivity : SimpleActivity() {
 
     private fun checkContactPermissions() {
         handlePermission(PERMISSION_READ_CONTACTS) {
-            initFragments()
+            if (it) {
+                initFragments()
+                registerContactsObserver()
+                if (binding.viewPager.adapter == null) {
+                    refreshItems(openLastTab = true, forceReloadContacts = true)
+                }
+            }
+        }
+    }
+
+    private fun registerContactsObserver() {
+        if (contactsObserver != null || !hasPermission(PERMISSION_READ_CONTACTS)) {
+            return
+        }
+
+        contactsObserver = object : ContentObserver(contactsRefreshHandler) {
+            override fun onChange(selfChange: Boolean) {
+                scheduleContactsRefresh()
+            }
+        }
+
+        contentResolver.registerContentObserver(
+            ContactsContract.Contacts.CONTENT_URI,
+            true,
+            contactsObserver!!
+        )
+    }
+
+    private fun unregisterContactsObserver() {
+        contactsReloadRunnable?.let { contactsRefreshHandler.removeCallbacks(it) }
+        contactsReloadRunnable = null
+        contactsObserver?.let { contentResolver.unregisterContentObserver(it) }
+        contactsObserver = null
+    }
+
+    private fun scheduleContactsRefresh() {
+        scheduleContactsReload()
+    }
+
+    private fun scheduleContactsReload() {
+        contactsReloadRunnable?.let { contactsRefreshHandler.removeCallbacks(it) }
+        contactsReloadRunnable = Runnable { reloadContactsFromProvider() }
+        contactsRefreshHandler.postDelayed(contactsReloadRunnable!!, 400)
+    }
+
+    fun getCurrentSearchQuery(): String {
+        return if (binding.mainMenu.isSearchOpen) {
+            binding.mainMenu.getCurrentQuery()
+        } else {
+            ""
+        }
+    }
+
+    private fun reloadContactsFromProvider() {
+        if (isDestroyed || isFinishing) {
+            return
+        }
+
+        ContactsCache.get(this, forceReload = true) { contacts ->
+            try {
+                cachedContacts.clear()
+                cachedContacts.addAll(contacts)
+            } catch (_: Exception) {
+            }
+
+            runOnUiThread {
+                getContactsFragment()?.applyContacts(contacts)
+                getFavoritesFragment()?.applyContacts(contacts)
+                getRecentsFragment()?.refreshAfterContactsChanged(contacts)
+            }
         }
     }
 
@@ -475,7 +558,7 @@ class MainActivity : SimpleActivity() {
         return resources.getString(stringId)
     }
 
-    private fun refreshItems(openLastTab: Boolean = false) {
+    private fun refreshItems(openLastTab: Boolean = false, forceReloadContacts: Boolean = false) {
         if (isDestroyed || isFinishing) {
             return
         }
@@ -485,10 +568,10 @@ class MainActivity : SimpleActivity() {
                 viewPager.adapter = ViewPagerAdapter(this@MainActivity)
                 viewPager.currentItem = if (openLastTab) config.lastUsedViewPagerPage else getDefaultTab()
                 viewPager.onGlobalLayout {
-                    refreshFragments()
+                    refreshFragments(forceReloadContacts)
                 }
             } else {
-                refreshFragments()
+                refreshFragments(forceReloadContacts)
             }
         }
     }
@@ -499,12 +582,19 @@ class MainActivity : SimpleActivity() {
         }
     }
 
-    fun refreshFragments() {
-        // Show call history first — contacts/favorites reuse ContactsCache in the background.
+    fun refreshFragments(forceReloadContacts: Boolean = false) {
         getRecentsFragment()?.refreshItems()
-        cacheContacts()
-        getFavoritesFragment()?.refreshItems()
-        getContactsFragment()?.refreshItems()
+        cacheContacts(forceReload = forceReloadContacts) { contacts ->
+            runOnUiThread {
+                try {
+                    cachedContacts.clear()
+                    cachedContacts.addAll(contacts)
+                } catch (_: Exception) {
+                }
+                getContactsFragment()?.applyContacts(contacts)
+                getFavoritesFragment()?.applyContacts(contacts)
+            }
+        }
     }
 
     private fun getAllFragments(): ArrayList<MyViewPagerFragment<*>?> {
@@ -611,7 +701,7 @@ class MainActivity : SimpleActivity() {
                 }
             }
 
-            getRecentsFragment()?.refreshItems {
+            getRecentsFragment()?.refreshItems(invalidate = true) {
                 if (binding.mainMenu.isSearchOpen) {
                     getCurrentFragment()?.onSearchQueryChanged(binding.mainMenu.getCurrentQuery())
                 }
@@ -619,18 +709,14 @@ class MainActivity : SimpleActivity() {
         }
     }
 
-    fun cacheContacts() {
-        ContactsCache.get(this) { contacts ->
-            try {
-                cachedContacts.clear()
-                cachedContacts.addAll(contacts)
-            } catch (_: Exception) {
-            }
+    fun cacheContacts(forceReload: Boolean = false, onCached: ((ArrayList<Contact>) -> Unit)? = null) {
+        ContactsCache.get(this, forceReload = forceReload) { contacts ->
+            onCached?.invoke(contacts)
         }
     }
 
     @Subscribe(threadMode = ThreadMode.MAIN)
     fun refreshCallLog(event: Events.RefreshCallLog) {
-        getRecentsFragment()?.refreshItems()
+        getRecentsFragment()?.refreshItems(invalidate = true)
     }
 }

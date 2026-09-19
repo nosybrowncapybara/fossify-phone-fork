@@ -9,7 +9,6 @@ import org.fossify.commons.extensions.beVisible
 import org.fossify.commons.extensions.getMyContactsCursor
 import org.fossify.commons.extensions.hasPermission
 import org.fossify.commons.extensions.isVisible
-import org.fossify.commons.extensions.normalizePhoneNumber
 import org.fossify.commons.extensions.underlineText
 import org.fossify.commons.helpers.MyContactsContentProvider
 import org.fossify.commons.helpers.PERMISSION_READ_CALL_LOG
@@ -26,6 +25,7 @@ import org.fossify.phone.extensions.runAfterAnimations
 import org.fossify.phone.extensions.startAddContactIntent
 import org.fossify.phone.extensions.startCallWithConfirmationCheck
 import org.fossify.phone.extensions.startContactDetailsIntent
+import org.fossify.phone.helpers.RecentCallContactResolver
 import org.fossify.phone.helpers.RecentsHelper
 import org.fossify.phone.interfaces.RefreshItemsListener
 import org.fossify.phone.models.CallLogItem
@@ -81,7 +81,41 @@ class RecentsFragment(
 
         refreshCallLog(loadAll = false) {
             binding.recentsList.runAfterAnimations {
-                refreshCallLog(loadAll = true)
+                refreshCallLog(loadAll = true) {
+                    callback?.invoke()
+                }
+            }
+        }
+    }
+
+    fun refreshAfterContactsChanged(cachedContacts: List<Contact>) {
+        if (allRecentCalls.none { it is RecentCall }) {
+            return
+        }
+
+        ensureBackgroundThread {
+            val recentCalls = allRecentCalls.filterIsInstance<RecentCall>()
+            val updatedCalls = RecentCallContactResolver.applyContactChanges(context, recentCalls, cachedContacts)
+            applyUpdatedCalls(updatedCalls)
+        }
+    }
+
+    private fun applyUpdatedCalls(updatedCalls: List<RecentCall>) {
+        val updatedCallsById = updatedCalls.associateBy { it.getItemId() }
+        val updatedList = allRecentCalls.map { item ->
+            if (item is RecentCall) {
+                updatedCallsById[item.getItemId()] ?: item
+            } else {
+                item
+            }
+        }
+
+        activity?.runOnUiThread {
+            allRecentCalls = updatedList
+            if (searchQuery.isNullOrEmpty()) {
+                recentsAdapter?.updateItems(updatedList)
+            } else {
+                updateSearchResult()
             }
         }
     }
@@ -112,11 +146,9 @@ class RecentsFragment(
                         .thenByDescending { it.startTS }
                 )
 
-            prepareCallLog(recentCalls) {
-                activity?.runOnUiThread {
-                    showOrHidePlaceholder(recentCalls.isEmpty())
-                    recentsAdapter?.updateItems(it, fixedText)
-                }
+            activity?.runOnUiThread {
+                showOrHidePlaceholder(recentCalls.isEmpty())
+                recentsAdapter?.updateItems(groupCallsByDate(recentCalls), fixedText)
             }
         }
     }
@@ -222,19 +254,13 @@ class RecentsFragment(
             return
         }
 
-        // Reuse MainActivity's contact cache — never re-query 10k+ contacts just for Recents.
         ensureBackgroundThread {
-            val cachedContacts = (activity as? MainActivity)?.cachedContacts.orEmpty()
-            val privateContacts = getPrivateContacts()
-            val updatedCalls = updateNamesIfEmpty(
-                calls = maybeFilterPrivateCalls(calls, privateContacts),
-                contacts = cachedContacts,
-                privateContacts = privateContacts
-            )
-
-            callback(
-                groupCallsByDate(updatedCalls)
-            )
+            val filteredCalls = if (SMT_PRIVATE in context.baseConfig.ignoredContactSources) {
+                maybeFilterPrivateCalls(calls, getPrivateContacts())
+            } else {
+                calls
+            }
+            callback(groupCallsByDate(filteredCalls))
         }
     }
 
@@ -251,55 +277,6 @@ class RecentsFragment(
         } else {
             calls
         }
-    }
-
-    private fun updateNamesIfEmpty(calls: List<RecentCall>, contacts: List<Contact>, privateContacts: List<Contact>): List<RecentCall> {
-        if (calls.isEmpty()) return mutableListOf()
-
-        val neededKeys = HashSet<String>()
-        for (call in calls) {
-            if (call.phoneNumber == call.name) {
-                val key = call.phoneNumber.normalizePhoneNumber().orEmpty().takeLast(9)
-                    .ifEmpty { call.phoneNumber.takeLast(9) }
-                if (key.isNotEmpty()) neededKeys.add(key)
-            }
-        }
-        if (neededKeys.isEmpty()) return calls
-
-        val nameByNumberSuffix = HashMap<String, String>()
-        fun indexContact(contact: Contact) {
-            if (nameByNumberSuffix.size >= neededKeys.size) return
-            val displayName = contact.getNameToDisplay()
-            for (phone in contact.phoneNumbers) {
-                val key = phone.normalizedNumber.takeLast(9).ifEmpty { phone.value.takeLast(9) }
-                if (key in neededKeys) {
-                    nameByNumberSuffix.putIfAbsent(key, displayName)
-                }
-            }
-        }
-        privateContacts.forEach(::indexContact)
-        contacts.forEach(::indexContact)
-
-        return calls.map { call ->
-            if (call.phoneNumber == call.name) {
-                val key = call.phoneNumber.normalizePhoneNumber().orEmpty().takeLast(9)
-                    .ifEmpty { call.phoneNumber.takeLast(9) }
-                val resolved = nameByNumberSuffix[key]
-                if (resolved != null) withUpdatedName(call = call, name = resolved) else call
-            } else {
-                call
-            }
-        }
-    }
-
-    private fun withUpdatedName(call: RecentCall, name: String): RecentCall {
-        return call.copy(
-            name = name,
-            groupedCalls = call.groupedCalls
-                ?.map { it.copy(name = name) }
-                ?.toMutableList()
-                ?.ifEmpty { null }
-        )
     }
 
     private fun groupCallsByDate(recentCalls: List<RecentCall>): MutableList<CallLogItem> {
@@ -319,6 +296,6 @@ class RecentsFragment(
     }
 
     private fun findContactByCall(recentCall: RecentCall): Contact? {
-        return (activity as MainActivity).cachedContacts.find { it.name == recentCall.name && it.doesHavePhoneNumber(recentCall.phoneNumber) }
+        return (activity as MainActivity).cachedContacts.find { it.doesHavePhoneNumber(recentCall.phoneNumber) }
     }
 }

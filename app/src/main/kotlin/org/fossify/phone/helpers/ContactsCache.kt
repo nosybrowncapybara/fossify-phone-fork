@@ -26,6 +26,10 @@ object ContactsCache {
         forceReload: Boolean = false,
         callback: (ArrayList<Contact>) -> Unit,
     ) {
+        if (forceReload) {
+            invalidate()
+        }
+
         if (!forceReload) {
             cached?.let {
                 callback(ArrayList(it))
