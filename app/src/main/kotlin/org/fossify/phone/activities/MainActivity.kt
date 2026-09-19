@@ -58,6 +58,7 @@ class MainActivity : SimpleActivity() {
     private var storedShowTabs = 0
     private var storedFontSize = 0
     private var storedStartNameWithSurname = false
+    private var fullScreenPermissionChecked = false
     var cachedContacts = ArrayList<Contact>()
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -90,11 +91,6 @@ class MainActivity : SimpleActivity() {
                 snackbar.show()
             }
 
-            handleFullScreenNotificationsPermission { granted ->
-                if (!granted) {
-                    toast(org.fossify.commons.R.string.notifications_disabled)
-                }
-            }
         } else {
             launchSetDefaultDialerIntent()
         }
@@ -110,6 +106,7 @@ class MainActivity : SimpleActivity() {
 
     override fun onResume() {
         super.onResume()
+        maybeRequestFullScreenNotificationsPermission()
         if (storedShowTabs != config.showTabs) {
             config.lastUsedViewPagerPage = 0
             System.exit(0)
@@ -267,6 +264,15 @@ class MainActivity : SimpleActivity() {
 
     private fun updateMenuColors() {
         binding.mainMenu.updateColors()
+    }
+
+    private fun maybeRequestFullScreenNotificationsPermission() {
+        if (!isDefaultDialer() || fullScreenPermissionChecked) {
+            return
+        }
+
+        fullScreenPermissionChecked = true
+        handleFullScreenNotificationsPermission { }
     }
 
     private fun checkContactPermissions() {

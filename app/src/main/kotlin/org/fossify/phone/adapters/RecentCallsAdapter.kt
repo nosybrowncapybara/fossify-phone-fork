@@ -9,6 +9,7 @@ import android.util.TypedValue
 import android.view.ContextThemeWrapper
 import android.view.Gravity
 import android.view.Menu
+import android.view.MenuItem
 import android.view.View
 import android.view.ViewGroup
 import androidx.appcompat.widget.PopupMenu
@@ -22,6 +23,10 @@ import com.google.i18n.phonenumbers.geocoding.PhoneNumberOfflineGeocoder
 import org.fossify.commons.adapters.MyRecyclerViewListAdapter
 import org.fossify.commons.dialogs.ConfirmationDialog
 import org.fossify.commons.extensions.addBlockedNumber
+import org.fossify.commons.extensions.deleteBlockedNumber
+import org.fossify.commons.extensions.getBlockedNumbers
+import org.fossify.commons.extensions.isNumberBlocked
+import org.fossify.commons.extensions.normalizePhoneNumber
 import org.fossify.commons.extensions.adjustAlpha
 import org.fossify.commons.extensions.adjustForContrast
 import org.fossify.commons.extensions.applyColorFilter
@@ -38,6 +43,7 @@ import org.fossify.commons.extensions.getProperTextColor
 import org.fossify.commons.extensions.getTextSize
 import org.fossify.commons.extensions.highlightTextPart
 import org.fossify.commons.extensions.launchSendSMSIntent
+import org.fossify.commons.extensions.toast
 import org.fossify.commons.extensions.setupViewBackground
 import org.fossify.commons.helpers.PERMISSION_WRITE_CALL_LOG
 import org.fossify.commons.helpers.SimpleContactsHelper
@@ -78,6 +84,7 @@ class RecentCallsAdapter(
     private lateinit var outgoingCallIcon: Drawable
     private lateinit var incomingCallIcon: Drawable
     private lateinit var incomingMissedCallIcon: Drawable
+    private lateinit var blockedCallIcon: Drawable
     var fontSize: Float = activity.getTextSize()
     private val areMultipleSIMsAvailable = activity.areMultipleSIMsAvailable()
     private var missedCallColor = resources.getColor(R.color.color_missed_call)
@@ -109,7 +116,7 @@ class RecentCallsAdapter(
             findItem(R.id.cab_call_sim_2).isVisible = hasMultipleSIMs && isOneItemSelected
             findItem(R.id.cab_remove_default_sim).isVisible = isOneItemSelected && (activity.config.getCustomSIM(selectedNumber) ?: "") != ""
 
-            findItem(R.id.cab_block_number).title = activity.getString(R.string.block_number)
+            updateBlockMenuItem(findItem(R.id.cab_block_number), getSelectedItems())
             findItem(R.id.cab_block_number).isVisible = isNougatPlus()
             findItem(R.id.cab_add_number).isVisible = isOneItemSelected
             findItem(R.id.cab_copy_number).isVisible = isOneItemSelected
@@ -127,7 +134,7 @@ class RecentCallsAdapter(
             R.id.cab_call_sim_1 -> callContact(true)
             R.id.cab_call_sim_2 -> callContact(false)
             R.id.cab_remove_default_sim -> removeDefaultSIM()
-            R.id.cab_block_number -> tryBlocking()
+            R.id.cab_block_number -> tryBlockingUnblocking()
             R.id.cab_add_number -> addNumberToContact()
             R.id.cab_send_sms -> sendSMS()
             R.id.cab_show_call_details -> showCallDetails()
@@ -213,6 +220,7 @@ class RecentCallsAdapter(
         outgoingCallIcon = resources.getColoredDrawableWithColor(R.drawable.ic_call_made_vector, outgoingCallColor)
         incomingCallIcon = resources.getColoredDrawableWithColor(R.drawable.ic_call_received_vector, incomingCallColor)
         incomingMissedCallIcon = resources.getColoredDrawableWithColor(R.drawable.ic_call_missed_vector, missedCallColor)
+        blockedCallIcon = resources.getColoredDrawableWithColor(R.drawable.ic_block_vector, missedCallColor)
     }
 
     private fun callContact(useSimOne: Boolean) {
@@ -235,13 +243,22 @@ class RecentCallsAdapter(
         finishActMode()
     }
 
-    private fun tryBlocking() {
-        askConfirmBlock()
+    private fun tryBlockingUnblocking() {
+        val selectedCalls = getSelectedItems()
+        if (selectedCalls.isEmpty()) {
+            return
+        }
+
+        if (areSelectedCallsBlocked(selectedCalls)) {
+            unblockNumbers(selectedCalls)
+        } else {
+            askConfirmBlock()
+        }
     }
 
     private fun askConfirmBlock() {
         val numbers = TextUtils.join(", ", getSelectedItems().distinctBy { it.phoneNumber }.map { it.phoneNumber })
-        val baseString = R.string.block_confirmation
+        val baseString = org.fossify.commons.R.string.block_confirmation
         val question = String.format(resources.getString(baseString), numbers)
 
         ConfirmationDialog(activity, question) {
@@ -255,17 +272,67 @@ class RecentCallsAdapter(
         }
 
         val callsToBlock = getSelectedItems()
+        val numbersToUpdate = callsToBlock.map { it.phoneNumber }.distinct()
         ensureBackgroundThread {
-            callsToBlock.map { it.phoneNumber }.forEach { number ->
+            numbersToUpdate.forEach { number ->
                 activity.addBlockedNumber(number)
             }
 
-            val recentCalls = currentList.toMutableList().also { it.removeAll(callsToBlock) }
             activity.runOnUiThread {
-                submitList(recentCalls)
+                refreshBlockedStateForNumbers(numbersToUpdate)
                 finishActMode()
             }
         }
+    }
+
+    private fun unblockNumbers(callsToUnblock: List<RecentCall>) {
+        val numbersToUpdate = callsToUnblock.map { it.phoneNumber }.distinct()
+        ensureBackgroundThread {
+            numbersToUpdate.forEach { number ->
+                activity.deleteBlockedNumber(number)
+            }
+
+            activity.runOnUiThread {
+                activity.toast(R.string.unblock_number_success)
+                refreshBlockedStateForNumbers(numbersToUpdate)
+                finishActMode()
+            }
+        }
+    }
+
+    private fun refreshBlockedStateForNumbers(numbers: Collection<String>) {
+        if (numbers.isEmpty()) {
+            return
+        }
+
+        val normalizedNumbers = numbers.mapNotNull { it.normalizePhoneNumber() }.toSet()
+        val rawNumbers = numbers.toSet()
+        currentList.forEachIndexed { index, item ->
+            if (item is RecentCall) {
+                val normalizedPhoneNumber = item.phoneNumber.normalizePhoneNumber()
+                if (item.phoneNumber in rawNumbers || normalizedPhoneNumber in normalizedNumbers) {
+                    notifyItemChanged(index)
+                }
+            }
+        }
+    }
+
+    private fun areSelectedCallsBlocked(calls: List<RecentCall>): Boolean {
+        val blockedNumbers = activity.getBlockedNumbers()
+        return calls.all { activity.isNumberBlocked(it.phoneNumber, blockedNumbers) }
+    }
+
+    private fun isCallBlocked(call: RecentCall): Boolean {
+        return activity.isNumberBlocked(call.phoneNumber, activity.getBlockedNumbers())
+    }
+
+    private fun updateBlockMenuItem(menuItem: MenuItem, calls: List<RecentCall>) {
+        val titleRes = if (areSelectedCallsBlocked(calls)) {
+            R.string.unblock_number
+        } else {
+            org.fossify.commons.R.string.block_number
+        }
+        menuItem.title = activity.getString(titleRes)
     }
 
     private fun addNumberToContact() {
@@ -373,7 +440,7 @@ class RecentCallsAdapter(
                 findItem(R.id.cab_add_number).isVisible = !call.isUnknownNumber
                 findItem(R.id.cab_copy_number).isVisible = !call.isUnknownNumber
                 findItem(R.id.cab_show_call_details).isVisible = !call.isUnknownNumber
-                findItem(R.id.cab_block_number).title = activity.getString(R.string.block_number)
+                updateBlockMenuItem(findItem(R.id.cab_block_number), listOf(call))
                 findItem(R.id.cab_block_number).isVisible = isNougatPlus() && !call.isUnknownNumber
                 findItem(R.id.cab_remove_default_sim).isVisible = (activity.config.getCustomSIM(selectedNumber) ?: "") != "" && !call.isUnknownNumber
             }
@@ -425,7 +492,7 @@ class RecentCallsAdapter(
 
                     R.id.cab_block_number -> {
                         selectedKeys.add(callId)
-                        tryBlocking()
+                        tryBlockingUnblocking()
                     }
 
                     R.id.cab_remove -> {
@@ -605,6 +672,12 @@ class RecentCallsAdapter(
                 }
 
                 itemRecentsType.setImageDrawable(drawable)
+
+                val isBlocked = isCallBlocked(call)
+                itemRecentsBlocked.apply {
+                    beVisibleIf(isBlocked)
+                    setImageDrawable(blockedCallIcon)
+                }
 
                 overflowMenuIcon.beVisibleIf(showOverflowMenu)
                 overflowMenuIcon.drawable.apply {

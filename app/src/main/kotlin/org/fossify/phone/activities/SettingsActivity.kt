@@ -112,6 +112,7 @@ class SettingsActivity : SimpleActivity() {
         setupDisableProximitySensor()
         setupDisableSwipeToAnswer()
         setupAlwaysShowFullscreen()
+        setupCallDiagnostics()
         setupCallsExport()
         setupCallsImport()
         updateTextColors(binding.settingsHolder)
@@ -186,6 +187,14 @@ class SettingsActivity : SimpleActivity() {
                 Intent(this@SettingsActivity, ManageBlockedNumbersActivity::class.java).apply {
                     startActivity(this)
                 }
+            }
+        }
+    }
+
+    private fun setupCallDiagnostics() {
+        binding.settingsCallDiagnosticsHolder.setOnClickListener {
+            Intent(this, CallDiagnosticsActivity::class.java).apply {
+                startActivity(this)
             }
         }
     }

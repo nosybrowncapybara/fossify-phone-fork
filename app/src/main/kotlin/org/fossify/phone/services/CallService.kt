@@ -3,7 +3,7 @@ package org.fossify.phone.services
 import android.telecom.Call
 import android.telecom.CallAudioState
 import android.telecom.InCallService
-import org.fossify.commons.extensions.canUseFullScreenIntent
+import org.fossify.phone.extensions.canUseFullScreenIntentCompat
 import org.fossify.commons.extensions.hasPermission
 import org.fossify.commons.helpers.PERMISSION_POST_NOTIFICATIONS
 import org.fossify.phone.activities.CallActivity
@@ -68,7 +68,7 @@ class CallService : InCallService() {
         if (
             lowPriority
             || !hasPermission(PERMISSION_POST_NOTIFICATIONS)
-            || !canUseFullScreenIntent()
+            || !canUseFullScreenIntentCompat()
         ) {
             try {
                 startActivity(CallActivity.getStartIntent(this))

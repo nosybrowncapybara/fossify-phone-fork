@@ -365,6 +365,21 @@
 
             </RelativeLayout>
 
+            <RelativeLayout
+                android:id="@+id/settings_call_diagnostics_holder"
+                style="@style/SettingsHolderTextViewOneLinerStyle"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content">
+
+                <org.fossify.commons.views.MyTextView
+                    android:id="@+id/settings_call_diagnostics_label"
+                    style="@style/SettingsTextLabelStyle"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="@string/call_diagnostics" />
+
+            </RelativeLayout>
+
             <include
                 android:id="@+id/settings_dialpad_divider"
                 layout="@layout/divider" />

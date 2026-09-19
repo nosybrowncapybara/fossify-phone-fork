@@ -112,11 +112,42 @@
         android:layout_marginTop="@dimen/normal_margin"
         android:alpha="0.8"
         android:textSize="@dimen/call_status_text_size"
-        app:layout_constraintBottom_toTopOf="@id/hold_status_label"
+        app:layout_constraintBottom_toTopOf="@id/call_connection_label"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@+id/caller_number"
         tools:text="Is Calling" />
+
+    <ImageView
+        android:id="@+id/call_connection_icon"
+        android:layout_width="@dimen/normal_icon_size"
+        android:layout_height="@dimen/normal_icon_size"
+        android:layout_marginTop="@dimen/small_margin"
+        android:contentDescription="@null"
+        android:visibility="gone"
+        app:layout_constraintBottom_toBottomOf="@id/call_connection_label"
+        app:layout_constraintEnd_toStartOf="@id/call_connection_label"
+        app:layout_constraintHorizontal_chainStyle="packed"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toTopOf="@id/call_connection_label"
+        tools:src="@drawable/ic_wifi_call_vector"
+        tools:visibility="visible" />
+
+    <org.fossify.commons.views.MyTextView
+        android:id="@+id/call_connection_label"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="@dimen/tiny_margin"
+        android:layout_marginTop="@dimen/small_margin"
+        android:alpha="0.9"
+        android:textSize="@dimen/call_status_text_size"
+        android:visibility="gone"
+        app:layout_constraintBottom_toTopOf="@id/hold_status_label"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toEndOf="@id/call_connection_icon"
+        app:layout_constraintTop_toBottomOf="@id/call_status_label"
+        tools:text="Wi-Fi call"
+        tools:visibility="visible" />
 
     <TextView
         android:id="@+id/hold_status_label"
@@ -131,7 +162,7 @@
         app:layout_constraintBottom_toTopOf="@id/guideline"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@+id/call_status_label"
+        app:layout_constraintTop_toBottomOf="@+id/call_connection_label"
         tools:visibility="visible" />
 
     <ImageView

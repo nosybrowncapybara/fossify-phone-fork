@@ -59,6 +59,15 @@ class CallActivity : SimpleActivity() {
     private var screenOnWakeLock: PowerManager.WakeLock? = null
     private var callDuration = 0
     private val callDurationHandler = Handler(Looper.getMainLooper())
+    private val connectionIndicatorHandler = Handler(Looper.getMainLooper())
+    private val updateConnectionIndicatorTask = object : Runnable {
+        override fun run() {
+            updateConnectionTypeIndicator()
+            if (!isCallEnded && CallManager.getPhoneState() != NoCall) {
+                connectionIndicatorHandler.postDelayed(this, 2000)
+            }
+        }
+    }
     private var dragDownX = 0f
     private var stopAnimation = false
     private var viewsUnderDialpad = arrayListOf<Pair<View, Float>>()
@@ -100,6 +109,7 @@ class CallActivity : SimpleActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        stopConnectionIndicatorUpdates()
         CallManager.removeListener(callCallback)
         disableProximitySensor()
 
@@ -693,6 +703,46 @@ class CallActivity : SimpleActivity() {
         }
 
         updateCallAudioState(CallManager.getCallAudioRoute())
+        updateConnectionTypeIndicator()
+        startConnectionIndicatorUpdates()
+    }
+
+    private fun startConnectionIndicatorUpdates() {
+        connectionIndicatorHandler.removeCallbacks(updateConnectionIndicatorTask)
+        if (!isCallEnded && CallManager.getPhoneState() != NoCall) {
+            connectionIndicatorHandler.post(updateConnectionIndicatorTask)
+        }
+    }
+
+    private fun stopConnectionIndicatorUpdates() {
+        connectionIndicatorHandler.removeCallbacks(updateConnectionIndicatorTask)
+    }
+
+    private fun updateConnectionTypeIndicator() {
+        val connectionType = CallConnectionHelper.getConnectionType(this, CallManager.getPrimaryCall())
+        val labelRes = CallConnectionHelper.getLabelResId(connectionType)
+        binding.callConnectionLabel.beVisibleIf(labelRes != null)
+        if (labelRes == null) {
+            binding.callConnectionIcon.beGone()
+            return
+        }
+
+        binding.callConnectionLabel.text = getString(labelRes)
+        when (connectionType) {
+            CallConnectionType.WIFI -> {
+                binding.callConnectionIcon.setImageResource(R.drawable.ic_wifi_call_vector)
+                binding.callConnectionIcon.applyColorFilter(getProperPrimaryColor())
+                binding.callConnectionIcon.beVisible()
+                binding.callConnectionLabel.setTextColor(getProperPrimaryColor())
+            }
+
+            CallConnectionType.MOBILE -> {
+                binding.callConnectionIcon.beGone()
+                binding.callConnectionLabel.setTextColor(getProperTextColor().adjustAlpha(0.8f))
+            }
+
+            CallConnectionType.UNKNOWN -> Unit
+        }
     }
 
     private fun updateCallOnHoldState(call: Call?) {
@@ -792,6 +842,7 @@ class CallActivity : SimpleActivity() {
         }
 
         isCallEnded = true
+        stopConnectionIndicatorUpdates()
         runOnUiThread {
             if (callDuration > 0) {
                 disableAllActionButtons()

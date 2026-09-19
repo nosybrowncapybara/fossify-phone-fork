@@ -1,7 +1,9 @@
 package org.fossify.phone.extensions
 
 import android.annotation.SuppressLint
+import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.telecom.PhoneAccount
 import android.telecom.PhoneAccountHandle
 import android.telecom.TelecomManager
@@ -138,35 +140,63 @@ fun SimpleActivity.showSelectSimDialog(
     callback(handle)
 }
 
+fun Context.canUseFullScreenIntentCompat(): Boolean {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        return true
+    }
+    return canUseFullScreenIntent()
+}
+
 fun SimpleActivity.handleFullScreenNotificationsPermission(callback: (granted: Boolean) -> Unit) {
-    handleNotificationPermission { granted ->
-        if (granted) {
-            if (canUseFullScreenIntent()) {
-                callback(true)
-            } else {
-                PermissionRequiredDialog(
-                    activity = this,
-                    textId = R.string.allow_full_screen_notifications_incoming_calls,
-                    positiveActionCallback = {
-                        @SuppressLint("NewApi")
-                        openFullScreenIntentSettings(BuildConfig.APPLICATION_ID)
-                    },
-                    negativeActionCallback = {
-                        callback(false)
-                    }
-                )
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+        callback(true)
+        return
+    }
+
+    handleNotificationPermission { notificationsGranted ->
+        if (!notificationsGranted) {
+            if (config.wasFullScreenIntentPromptDismissed) {
+                callback(false)
+                return@handleNotificationPermission
             }
-        } else {
+
+            config.wasFullScreenIntentPromptDismissed = true
             PermissionRequiredDialog(
                 activity = this,
                 textId = R.string.allow_notifications_incoming_calls,
                 positiveActionCallback = {
                     openNotificationSettings()
+                    callback(false)
                 },
                 negativeActionCallback = {
                     callback(false)
                 }
             )
+            return@handleNotificationPermission
         }
+
+        if (canUseFullScreenIntentCompat()) {
+            callback(true)
+            return@handleNotificationPermission
+        }
+
+        if (config.wasFullScreenIntentPromptDismissed) {
+            callback(false)
+            return@handleNotificationPermission
+        }
+
+        config.wasFullScreenIntentPromptDismissed = true
+        PermissionRequiredDialog(
+            activity = this,
+            textId = R.string.allow_full_screen_notifications_incoming_calls,
+            positiveActionCallback = {
+                @SuppressLint("NewApi")
+                openFullScreenIntentSettings(BuildConfig.APPLICATION_ID)
+                callback(false)
+            },
+            negativeActionCallback = {
+                callback(false)
+            }
+        )
     }
 }

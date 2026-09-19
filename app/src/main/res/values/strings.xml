@@ -64,6 +64,10 @@
     <string name="audio_route_wired_or_earpiece">Wired or Earpiece</string>
     <string name="choose_audio_route">Choose audio route</string>
     <string name="calling_blocked_number">The number you are calling is blocked</string>
+    <string name="wifi_call_active">Wi-Fi call</string>
+    <string name="mobile_call_active">Mobile call</string>
+    <string name="unblock_number">Unblock number</string>
+    <string name="unblock_number_success">Number unblocked</string>
     <string name="call_is_being_connected">Your call is being connected…</string>
     <string name="call_notification_channel">Call status</string>
     <string name="call_notification_channel_high_priority">Call status (high priority)</string>
@@ -83,6 +87,10 @@
     <string name="export_call_history">Export call history</string>
     <string name="import_call_history">Import call history</string>
     <string name="calling_accounts">Calling accounts</string>
+    <string name="call_diagnostics">Call diagnostics</string>
+    <string name="call_diagnostics_hint">Use this screen while placing a test call. It refreshes every 2 seconds and shows whether Android reports a Wi-Fi call (PROPERTY_WIFI) and which SIM/account is used. Copy the report to share with support.</string>
+    <string name="copy_report">Copy report</string>
+    <string name="refresh">Refresh</string>
 
     <!-- FAQ -->
     <string name="faq_1_title">I hear incoming calls, but the screen doesn\'t turn on. What can I do?</string>

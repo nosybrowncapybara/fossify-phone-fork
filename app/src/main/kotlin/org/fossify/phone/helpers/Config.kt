@@ -130,6 +130,12 @@ class Config(context: Context) : BaseConfig(context) {
         get() = prefs.getBoolean(WAS_OVERLAY_SNACKBAR_CONFIRMED, false)
         set(wasOverlaySnackbarConfirmed) = prefs.edit().putBoolean(WAS_OVERLAY_SNACKBAR_CONFIRMED, wasOverlaySnackbarConfirmed).apply()
 
+    var wasFullScreenIntentPromptDismissed: Boolean
+        get() = prefs.getBoolean(WAS_FULL_SCREEN_INTENT_PROMPT_DISMISSED, false)
+        set(wasFullScreenIntentPromptDismissed) = prefs.edit()
+            .putBoolean(WAS_FULL_SCREEN_INTENT_PROMPT_DISMISSED, wasFullScreenIntentPromptDismissed)
+            .apply()
+
     var dialpadVibration: Boolean
         get() = prefs.getBoolean(DIALPAD_VIBRATION, true)
         set(dialpadVibration) = prefs.edit().putBoolean(DIALPAD_VIBRATION, dialpadVibration).apply()
